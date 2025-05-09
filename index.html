@@ -1,165 +1,434 @@
-<!DOCTYPE html><html lang="en">
+<!DOCTYPE html>
+<html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>Hexa Fall — Endless Mode</title>
-  <style>
-    /* --- basic layout ---------------------------------------------------- */
-    html,body{margin:0;padding:0;background:#000;overflow:hidden;}
-    canvas{display:block;background:#000;cursor:pointer;}/* --- HUD ------------------------------------------------------------- */
-#score{
-  position:fixed;left:50%;top:10px;transform:translateX(-50%);
-  font:700 24px/1.2 "Trebuchet MS",Arial,Helvetica,sans-serif;
-  color:#0ff;text-shadow:0 0 6px #0ff;
-}
-
-  </style>
-</head>
-<body>
-  <!-- heads‑up display -->
-  <div id="score">Score 0</div>
-  <!-- main rendering surface -->
-  <canvas id="game"></canvas>  <!-- physics engine 🔧 (60 kB gzip) -------------------------------------- -->  <script src="https://cdn.jsdelivr.net/npm/matter-js@0.19.0/build/matter.min.js"></script>  <script>
-  /* ----------------------------------------------------------------------
-   *  Hexa Fall ∞
-   *  ‑‑ tap blocks to delete them and guide the hexagon safely downward.
-   *  The tower is procedurally generated so the game never ends —
-   *  stay alive as long as you can!
-   *  Author: ChatGPT o3 (OpenAI)
-   * -------------------------------------------------------------------- */
-  (()=>{
-    /* ----- DOM & canvas -------------------------------------------------- */
-    const cvs=document.getElementById('game');
-    const ctx=cvs.getContext('2d');
-    const scoreEl=document.getElementById('score');
-    const resize=()=>{cvs.width=innerWidth;cvs.height=innerHeight;};
-    addEventListener('resize',resize);resize();
-
-    /* ----- Matter.js aliases -------------------------------------------- */
-    const {Engine,World,Bodies,Body,Composite,Query} = Matter;
-
-    /* ----- engine setup -------------------------------------------------- */
-    const engine=Engine.create();
-    engine.gravity.y=1.2;          // tweak for snappy fall
-    const world=engine.world;
-
-    /* ----- gameplay constants ------------------------------------------- */
-    const BLOCK_W  = 90;          // width of each block cell (px)
-    const BLOCK_H  = 30;          // height of each block cell
-    const COLS     = 6;           // how many columns per row
-    const START_ROWS = 8;         // initial tower height
-    const HEX_SIZE = 35;          // radius of hexagon (px)
-    const COLOR_POOL=['#0ff','#03f','#f0f','#ff0','#0f0','#f30'];
-
-    /* ----- helper: neon random color ------------------------------------ */
-    const neon=()=>COLOR_POOL[Math.random()*COLOR_POOL.length|0];
-
-    /* ----- bodies -------------------------------------------------------- */
-    const hex=Bodies.polygon(0,-500,6,HEX_SIZE,{
-      restitution:0.25,
-      friction:0.9,
-      render:{fillStyle:'#09f'}
-    });
-    World.add(world,hex);
-
-    // floor that keeps moving down so the world is effectively endless
-    const floor=Bodies.rectangle(0,3e4,4000,120,{isStatic:true});
-    World.add(world,floor);
-
-    // build starting stack
-    const addRow=y=>{
-      for(let c=0;c<COLS;c++){
-        // small gap probability for playable holes
-        if(Math.random()<0.18) continue;
-        const block=Bodies.rectangle((c-COLS/2+0.5)*BLOCK_W, y, BLOCK_W, BLOCK_H,{
-          isStatic:true,
-          render:{fillStyle:neon()}
-        });
-        World.add(world,block);
-      }
-    };
-    for(let r=0;r<START_ROWS;r++) addRow(-r*BLOCK_H);
-
-    /* ----- camera & world recycling ------------------------------------- */
-    let camY=0, score=0, dead=false;
-
-    const recycle=()=>{
-      // extend tower downward ahead of player
-      while(floor.position.y - hex.position.y < cvs.height*2){
-        addRow(floor.position.y - 400);                   // new row above floor
-        Body.setPosition(floor,{x:0,y:floor.position.y+BLOCK_H*4});
-      }
-    };
-
-    /* ----- mouse interaction (remove blocks) ---------------------------- */
-    cvs.addEventListener('mousedown',e=>{
-      if(dead) return;
-      const rect=cvs.getBoundingClientRect();
-      const worldPoint={
-        x:e.clientX-rect.left - cvs.width/2,           // convert to world coords
-        y:e.clientY-rect.top  + camY
-      };
-      const hits=Query.point(Composite.allBodies(world),worldPoint);
-      hits.forEach(b=>{
-        if(b.isStatic && b!==floor){
-          Body.setStatic(b,false);                // let it fall, then purge later
-          setTimeout(()=>World.remove(world,b),3000);
-        }
-      });
-    });
-
-    /* ----- main loop ----------------------------------------------------- */
-    (function loop(){
-      requestAnimationFrame(loop);
-      if(dead) return draw();
-
-      Engine.update(engine,1000/60);
-      recycle();
-
-      // camera follows hexagon downward only (never upward)
-      camY=Math.min(camY,hex.position.y-cvs.height/3);
-
-      // scoring: 1 pt every 100 px descended
-      const newScore=Math.floor((hex.position.y+500)/100);
-      if(newScore>score){score=newScore;scoreEl.textContent='Score '+score;}
-
-      // lose conditions (falling out of column area)
-      if(hex.position.x < -COLS*BLOCK_W || hex.position.x > COLS*BLOCK_W){dead=true;}
-
-      draw();
-    })();
-
-    /* ----- rendering ----------------------------------------------------- */
-    function draw(){
-      ctx.clearRect(0,0,cvs.width,cvs.height);
-      ctx.save();
-      ctx.translate(cvs.width/2,-camY);               // camera transform
-
-      ctx.lineWidth=1;
-      Composite.allBodies(world).forEach(b=>{
-        const v=b.vertices;
-        ctx.beginPath();
-        ctx.moveTo(v[0].x,v[0].y);
-        for(let i=1;i<v.length;i++) ctx.lineTo(v[i].x,v[i].y);
-        ctx.closePath();
-        ctx.fillStyle=b.render.fillStyle||'#222';
-        ctx.fill();
-        ctx.strokeStyle='rgba(255,255,255,0.08)';
-        ctx.stroke();
-      });
-
-      if(dead){
-        ctx.fillStyle='rgba(0,0,0,0.6)';
-        ctx.fillRect(-cvs.width/2+camY,cvs.height/2-100,cvs.width,200);
-        ctx.fillStyle='#fff';
-        ctx.textAlign='center';
-        ctx.font='48px Arial';
-        ctx.fillText('Game Over',0,hex.position.y-60);
-        ctx.font='24px Arial';
-        ctx.fillText('Refresh to restart',0,hex.position.y-20);
-      }
-      ctx.restore();
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hexa Fall Clone - Tetris Shapes</title>
+<style>
+    body {
+        margin: 0;
+        font-family: Arial, sans-serif;
+        background-color: #0c0c2c; /* Dark blue space background */
+        color: #fff;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        overflow: hidden;
+        position: relative; /* For pseudo-elements like stars */
     }
 
-  })();
-  </script></body>
+    body::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: radial-gradient(ellipse at center, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0) 70%),
+                    radial-gradient(ellipse at top left, rgba(100,100,200,0.2) 0%, rgba(100,100,200,0) 50%),
+                    radial-gradient(ellipse at bottom right, rgba(150,50,200,0.2) 0%, rgba(150,50,200,0) 50%);
+        z-index: -1;
+        animation: starsPulse 10s infinite ease-in-out;
+    }
+
+    @keyframes starsPulse {
+        0%, 100% { opacity: 0.8; }
+        50% { opacity: 1; }
+    }
+
+    .game-container {
+        width: 300px; /* Adjusted for typical cell-based layouts */
+        height: 500px;
+        background-color: rgba(10, 10, 40, 0.5);
+        border: 2px solid #6f42c1;
+        box-shadow: 0 0 20px #6f42c1, inset 0 0 15px rgba(111, 66, 193, 0.5);
+        position: relative;
+        overflow: hidden;
+        border-radius: 10px;
+    }
+
+    .header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 10px 15px;
+        background-color: rgba(20, 20, 60, 0.7);
+        border-bottom: 1px solid #6f42c1;
+        width: 300px; /* Match game container */
+        box-sizing: border-box;
+        margin-bottom: 5px;
+    }
+
+    .pause-button {
+        width: 30px;
+        height: 30px;
+        background-color: #8a63d2;
+        border: none;
+        border-radius: 5px;
+        cursor: pointer;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-evenly;
+        align-items: center;
+        padding: 6px;
+        box-sizing: border-box;
+        box-shadow: 0 0 5px #8a63d2;
+    }
+
+    .pause-button span { display: block; width: 4px; height: 12px; background-color: #fff; border-radius: 1px; }
+    .pause-button-inner { display: flex; justify-content: space-between; width: 100%; height: 100%;}
+
+    .level-info { text-align: center; }
+    .level-info h2 { margin: 0; font-size: 1.2em; color: #00bcd4; text-shadow: 0 0 5px #00bcd4; }
+    .level-info p { margin: 0; font-size: 0.9em; color: #ffeb3b; text-shadow: 0 0 3px #ffeb3b; }
+
+    .hexagon {
+        width: 38px; /* Slightly smaller to better fit cell grid */
+        height: 44px;
+        background-color: #00e676;
+        clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+        position: absolute;
+        transform: translateX(-50%);
+        transition: top 0.2s ease-out;
+        z-index: 10;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 0 10px #00e676, inset 0 0 5px rgba(0, 230, 118, 0.7);
+    }
+    .hexagon::before { content: '▼'; color: #071f14; font-size: 16px; font-weight: bold; }
+
+    .block-tower {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        width: 100%;
+        display: flex;
+        flex-direction: column-reverse; /* Stack rows from bottom up */
+    }
+
+    .block-row {
+        display: flex;
+        /* justify-content: center; Centering handled by cell placement */
+    }
+
+    .block { /* This now represents a single cell of a Tetris shape */
+        width: 28px;  /* Cell width (300px container / 10 cells = 30px, -2 for border/margin) */
+        height: 28px; /* Cell height */
+        margin: 1px;
+        cursor: pointer;
+        border-radius: 3px;
+        transition: opacity 0.3s, transform 0.3s;
+        box-shadow: inset 0 0 4px rgba(255,255,255,0.3);
+        /* background-color: grey; Default, will be overridden */
+    }
+    .block.empty-cell {
+        visibility: hidden; /* Takes up space but not visible, for grid alignment */
+    }
+
+    .block.color-1 { background-color: #ff4081; box-shadow: 0 0 6px #ff4081, inset 0 0 4px rgba(255, 64, 129, 0.7); }
+    .block.color-2 { background-color: #7c4dff; box-shadow: 0 0 6px #7c4dff, inset 0 0 4px rgba(124, 77, 255, 0.7); }
+    .block.color-3 { background-color: #00bcd4; box-shadow: 0 0 6px #00bcd4, inset 0 0 4px rgba(0, 188, 212, 0.7); }
+    .block.color-4 { background-color: #ff9800; box-shadow: 0 0 6px #ff9800, inset 0 0 4px rgba(255, 152, 0, 0.7); }
+    .block.color-5 { background-color: #4caf50; box-shadow: 0 0 6px #4caf50, inset 0 0 4px rgba(76, 175, 80, 0.7); } /* Green */
+    .block.color-6 { background-color: #f44336; box-shadow: 0 0 6px #f44336, inset 0 0 4px rgba(244, 67, 54, 0.7); } /* Red */
+    .block.color-7 { background-color: #ffeb3b; box-shadow: 0 0 6px #ffeb3b, inset 0 0 4px rgba(255,235,59,0.7); } /* Yellow */
+
+
+    .block.removing { opacity: 0; transform: scale(0.5); }
+
+    .game-over-message {
+        position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+        background-color: rgba(0,0,0,0.8); padding: 20px; border-radius: 10px;
+        text-align: center; z-index: 100; display: none; color: #fff; font-size: 1.5em;
+        box-shadow: 0 0 15px #ffeb3b;
+    }
+    .game-over-message button {
+        padding: 10px 20px; margin-top: 15px; background-color: #ffeb3b; color: #333;
+        border: none; border-radius: 5px; cursor: pointer; font-size: 0.8em; box-shadow: 0 0 5px #ffeb3b;
+    }
+</style>
+</head>
+<body>
+
+    <div class="header">
+        <button class="pause-button" aria-label="Pause">
+            <div class="pause-button-inner"><span></span><span></span></div>
+        </button>
+        <div class="level-info">
+            <h2 id="levelDisplay">LEVEL 1</h2>
+            <p id="scoreDisplay">Best: ☆☆☆</p>
+        </div>
+        <div style="width: 30px;"></div> </div>
+
+    <div class="game-container" id="gameContainer">
+        <div class="hexagon" id="hexagon"></div>
+        <div class="block-tower" id="blockTower"></div>
+    </div>
+
+    <div class="game-over-message" id="gameOverMessage">
+        Game Over! <button onclick="resetGame()">Play Again</button>
+    </div>
+
+<script>
+    const gameContainer = document.getElementById('gameContainer');
+    const hexagon = document.getElementById('hexagon');
+    const blockTower = document.getElementById('blockTower');
+    const gameOverMessage = document.getElementById('gameOverMessage');
+    const levelDisplay = document.getElementById('levelDisplay');
+
+    const CELL_WIDTH_MARGINED = 30; // Includes margin, e.g. 28px cell + 2px margin
+    const CELL_HEIGHT_MARGINED = 30;
+    const HEXAGON_HEIGHT = 44;
+    const CONTAINER_WIDTH_CELLS = 10; // Game container width / cell_width = 300 / 30
+    const TOWER_MAX_CELL_ROWS = 14; // Max visual rows in the tower area
+
+    let hexagonTop = 20;
+    let level = 1;
+    let shapeIdCounter = 0; // To give each placed shape a unique ID
+
+    const tetrominoes = {
+        'I': { cells: [[0,0], [1,0], [2,0], [3,0]], colorClass: 'color-1' }, // Vertical I (4 cells high)
+        'L': { cells: [[0,0], [1,0], [2,0], [2,1]], colorClass: 'color-2' }, // L (3 high, 2 wide at bottom)
+        'J': { cells: [[0,1], [1,1], [2,1], [2,0]], colorClass: 'color-3' }, // J (3 high, 2 wide at bottom)
+        'T': { cells: [[0,0], [0,1], [0,2], [1,1]], colorClass: 'color-4' }, // T (2 high, 3 wide at top)
+        'O': { cells: [[0,0], [0,1], [1,0], [1,1]], colorClass: 'color-5' }, // Square (2x2)
+        'S': { cells: [[0,1], [0,2], [1,0], [1,1]], colorClass: 'color-6' }, // S (2 high, 3 wide)
+        'Z': { cells: [[0,0], [0,1], [1,1], [1,2]], colorClass: 'color-7' }  // Z (2 high, 3 wide)
+    };
+
+    // Define level layouts by specifying shapes and their positions
+    // { type: 'ShapeKey', baseRow: (row from bottom, 0-indexed), baseCol: (col from left, 0-indexed) }
+    const levelData = [
+        // Level 1
+        [
+            { type: 'O', baseRow: 0, baseCol: 4 },
+            { type: 'I', baseRow: 0, baseCol: 0 }, // 4 cells high
+            { type: 'L', baseRow: 2, baseCol: 4 }, // L's origin is bottom-left cell of its 3x2 bounding box
+            { type: 'J', baseRow: 0, baseCol: 7 },
+            { type: 'T', baseRow: 4, baseCol: 1 },
+            { type: 'S', baseRow: 5, baseCol: 4 },
+            { type: 'Z', baseRow: 2, baseCol: 1 },
+        ],
+        // Level 2
+        [
+            { type: 'I', baseRow: 0, baseCol: 1 },
+            { type: 'I', baseRow: 0, baseCol: 7 },
+            { type: 'O', baseRow: 0, baseCol: 4 },
+            { type: 'T', baseRow: 2, baseCol: 3 },
+            { type: 'L', baseRow: 4, baseCol: 0 },
+            { type: 'J', baseRow: 4, baseCol: 6 },
+            { type: 'S', baseRow: 7, baseCol: 2 },
+            { type: 'Z', baseRow: 7, baseCol: 5 },
+        ]
+    ];
+
+    function generateBlocks(currentLevelShapes) {
+        blockTower.innerHTML = '';
+        shapeIdCounter = 0; // Reset for new level generation
+
+        // Create a virtual grid to "paint" the shapes onto
+        let grid = Array(TOWER_MAX_CELL_ROWS).fill(null).map(() => Array(CONTAINER_WIDTH_CELLS).fill(null));
+
+        currentLevelShapes.forEach(shapeInfo => {
+            const piece = tetrominoes[shapeInfo.type];
+            if (!piece) {
+                console.warn(`Shape type ${shapeInfo.type} not found.`);
+                return;
+            }
+            const currentShapeId = `shape-${shapeIdCounter++}`;
+
+            piece.cells.forEach(offset => { // offset is [rowOffsetFromShapeOrigin, colOffsetFromShapeOrigin]
+                // baseRow is from bottom for shape's origin, convert to grid row (from top)
+                const cellRowInGrid = TOWER_MAX_CELL_ROWS - 1 - (shapeInfo.baseRow + offset[0]);
+                const cellColInGrid = shapeInfo.baseCol + offset[1];
+
+                if (cellRowInGrid >= 0 && cellRowInGrid < TOWER_MAX_CELL_ROWS &&
+                    cellColInGrid >= 0 && cellColInGrid < CONTAINER_WIDTH_CELLS) {
+                    if (grid[cellRowInGrid][cellColInGrid]) {
+                        console.warn("Overlap detected for shape:", shapeInfo, "at cell:", cellRowInGrid, cellColInGrid);
+                    }
+                    grid[cellRowInGrid][cellColInGrid] = {
+                        shapeId: currentShapeId,
+                        colorClass: piece.colorClass
+                    };
+                } else {
+                     console.warn("Shape cell out of bounds:", shapeInfo, offset, cellRowInGrid, cellColInGrid);
+                }
+            });
+        });
+
+        // Render the grid into actual DOM elements
+        for (let r = 0; r < TOWER_MAX_CELL_ROWS; r++) {
+            const blockRowDiv = document.createElement('div');
+            blockRowDiv.classList.add('block-row');
+            for (let c = 0; c < CONTAINER_WIDTH_CELLS; c++) {
+                const cell = document.createElement('div');
+                cell.classList.add('block'); // Basic block style
+                if (grid[r][c]) {
+                    const cellData = grid[r][c];
+                    cell.classList.add(cellData.colorClass);
+                    cell.dataset.shapeId = cellData.shapeId;
+                    cell.dataset.gridRow = r;
+                    cell.dataset.gridCol = c;
+                    cell.addEventListener('click', removeShape);
+                } else {
+                    cell.classList.add('empty-cell'); // Make it an empty placeholder
+                }
+                blockRowDiv.appendChild(cell);
+            }
+            blockTower.appendChild(blockRowDiv); // Appended rows will be reversed by flexbox
+        }
+        positionHexagon();
+    }
+
+    function positionHexagon() {
+        const towerHeight = blockTower.offsetHeight; // Actual rendered height of all rows
+        hexagonTop = gameContainer.clientHeight - towerHeight - HEXAGON_HEIGHT - 5; // 5px buffer
+        if (hexagonTop < 10) hexagonTop = 10; // Min top position
+
+        // Center hexagon based on cell grid
+        const hexWidth = parseInt(window.getComputedStyle(hexagon).width);
+        hexagon.style.left = `${(CONTAINER_WIDTH_CELLS * CELL_WIDTH_MARGINED / 2) - (hexWidth / 2)}px`;
+        hexagon.style.top = `${hexagonTop}px`;
+    }
+
+    function removeShape(event) {
+        const clickedCell = event.target;
+        if (!clickedCell.dataset.shapeId || clickedCell.classList.contains('removing')) return;
+
+        const shapeIdToRemove = clickedCell.dataset.shapeId;
+        const cellsOfShape = document.querySelectorAll(`.block[data-shape-id="${shapeIdToRemove}"]`);
+
+        cellsOfShape.forEach(cell => {
+            cell.classList.add('removing');
+            setTimeout(() => {
+                if (cell.parentNode) {
+                    // Replace with an empty cell to maintain grid structure
+                    const emptyCell = document.createElement('div');
+                    emptyCell.classList.add('block', 'empty-cell');
+                    // Ensure it has same dimensions for layout
+                    emptyCell.style.width = window.getComputedStyle(cell).width;
+                    emptyCell.style.height = window.getComputedStyle(cell).height;
+                    emptyCell.style.margin = window.getComputedStyle(cell).margin;
+                    cell.parentNode.replaceChild(emptyCell, cell);
+                }
+            }, 300); // Match CSS transition for removing
+        });
+
+        // Delay checkFall to allow animation and DOM update
+        setTimeout(() => {
+            checkFall();
+        }, 310);
+    }
+
+    function checkFall() {
+        const hexRect = hexagon.getBoundingClientRect();
+        const gameRect = gameContainer.getBoundingClientRect();
+
+        let supported = false;
+        let highestSupportY = gameRect.bottom; // Fall to bottom if no support
+
+        // Check active block cells for support
+        const blocks = document.querySelectorAll('.block:not(.empty-cell):not(.removing)');
+        blocks.forEach(block => {
+            const blockRect = block.getBoundingClientRect();
+            const horizontalOverlap = hexRect.left < blockRect.right && hexRect.right > blockRect.left;
+            const verticalProximity = hexRect.bottom >= blockRect.top - 5 && hexRect.bottom <= blockRect.bottom + 5;
+
+            if (horizontalOverlap && verticalProximity) {
+                supported = true;
+                if (blockRect.top < highestSupportY) {
+                    highestSupportY = blockRect.top;
+                }
+            }
+        });
+
+        if (supported) {
+            const newHexTop = highestSupportY - HEXAGON_HEIGHT - gameRect.top;
+            hexagon.style.top = `${newHexTop}px`;
+            hexagonTop = newHexTop; // Update internal tracking
+        } else {
+            // Fall further down
+            hexagonTop += 15; // Fall speed
+            hexagon.style.top = `${hexagonTop}px`;
+        }
+
+        // Game over conditions
+        if (hexagon.getBoundingClientRect().bottom > gameRect.bottom - 1) { // Check against actual bottom
+             hexagon.style.top = `${gameRect.height - HEXAGON_HEIGHT}px`; // Sit on bottom
+            gameOver();
+        } else if (hexagonTop < 0) { // Fell off top (e.g. cleared all blocks)
+            if (document.querySelectorAll('.block:not(.empty-cell):not(.removing)').length === 0) {
+                levelCleared();
+            } else {
+                // This case should ideally not happen if it's falling downwards.
+                // If it means it fell off sideways somehow (not in this simple model)
+                gameOver();
+            }
+        }
+
+        if (!supported && hexagon.getBoundingClientRect().bottom < gameRect.bottom -1) {
+            requestAnimationFrame(checkFall);
+        }
+    }
+
+    function levelCleared() {
+        gameOverMessage.innerHTML = `Level ${level} Cleared! <button onclick="nextLevel()">Next Level</button>`;
+        gameOverMessage.style.display = 'block';
+    }
+
+    function nextLevel() {
+        level++;
+        if (level > levelData.length) {
+            gameOverMessage.innerHTML = `All Levels Cleared! <button onclick="resetGame(1)">Play Again From Level 1</button>`;
+        } else {
+            gameOverMessage.style.display = 'none';
+            levelDisplay.textContent = `LEVEL ${level}`;
+            const currentLevelShapes = levelData[level - 1];
+            generateBlocks(currentLevelShapes);
+        }
+    }
+
+    function gameOver() {
+        gameOverMessage.innerHTML = `Game Over! Level ${level} <button onclick="resetGame()">Try Again</button>`;
+        gameOverMessage.style.display = 'block';
+    }
+
+    function resetGame(startLevel) {
+        level = startLevel || level; // Reset to current level or specified startLevel
+        if (startLevel === 1) level = 1;
+
+        if (level > levelData.length && startLevel !==1) { // If trying to reset a non-existent future level
+            level = 1; // Default to level 1
+        }
+
+
+        gameOverMessage.style.display = 'none';
+        levelDisplay.textContent = `LEVEL ${level}`;
+        const currentLevelShapes = levelData[level - 1];
+        if (!currentLevelShapes) {
+            console.error("Cannot load level " + level + ". Resetting to level 1.");
+            level = 1;
+            levelDisplay.textContent = `LEVEL ${level}`;
+            generateBlocks(levelData[0]);
+        } else {
+            generateBlocks(currentLevelShapes);
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        const currentLevelShapes = levelData[level - 1];
+        if (currentLevelShapes) {
+            generateBlocks(currentLevelShapes);
+        } else {
+            console.error("Initial level data not found!");
+            // Fallback or error message
+        }
+    });
+
+</script>
+</body>
 </html>
