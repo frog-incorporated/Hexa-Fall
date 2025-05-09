@@ -1,0 +1,165 @@
+<!DOCTYPE html><html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Hexa Fall — Endless Mode</title>
+  <style>
+    /* --- basic layout ---------------------------------------------------- */
+    html,body{margin:0;padding:0;background:#000;overflow:hidden;}
+    canvas{display:block;background:#000;cursor:pointer;}/* --- HUD ------------------------------------------------------------- */
+#score{
+  position:fixed;left:50%;top:10px;transform:translateX(-50%);
+  font:700 24px/1.2 "Trebuchet MS",Arial,Helvetica,sans-serif;
+  color:#0ff;text-shadow:0 0 6px #0ff;
+}
+
+  </style>
+</head>
+<body>
+  <!-- heads‑up display -->
+  <div id="score">Score 0</div>
+  <!-- main rendering surface -->
+  <canvas id="game"></canvas>  <!-- physics engine 🔧 (60 kB gzip) -------------------------------------- -->  <script src="https://cdn.jsdelivr.net/npm/matter-js@0.19.0/build/matter.min.js"></script>  <script>
+  /* ----------------------------------------------------------------------
+   *  Hexa Fall ∞
+   *  ‑‑ tap blocks to delete them and guide the hexagon safely downward.
+   *  The tower is procedurally generated so the game never ends —
+   *  stay alive as long as you can!
+   *  Author: ChatGPT o3 (OpenAI)
+   * -------------------------------------------------------------------- */
+  (()=>{
+    /* ----- DOM & canvas -------------------------------------------------- */
+    const cvs=document.getElementById('game');
+    const ctx=cvs.getContext('2d');
+    const scoreEl=document.getElementById('score');
+    const resize=()=>{cvs.width=innerWidth;cvs.height=innerHeight;};
+    addEventListener('resize',resize);resize();
+
+    /* ----- Matter.js aliases -------------------------------------------- */
+    const {Engine,World,Bodies,Body,Composite,Query} = Matter;
+
+    /* ----- engine setup -------------------------------------------------- */
+    const engine=Engine.create();
+    engine.gravity.y=1.2;          // tweak for snappy fall
+    const world=engine.world;
+
+    /* ----- gameplay constants ------------------------------------------- */
+    const BLOCK_W  = 90;          // width of each block cell (px)
+    const BLOCK_H  = 30;          // height of each block cell
+    const COLS     = 6;           // how many columns per row
+    const START_ROWS = 8;         // initial tower height
+    const HEX_SIZE = 35;          // radius of hexagon (px)
+    const COLOR_POOL=['#0ff','#03f','#f0f','#ff0','#0f0','#f30'];
+
+    /* ----- helper: neon random color ------------------------------------ */
+    const neon=()=>COLOR_POOL[Math.random()*COLOR_POOL.length|0];
+
+    /* ----- bodies -------------------------------------------------------- */
+    const hex=Bodies.polygon(0,-500,6,HEX_SIZE,{
+      restitution:0.25,
+      friction:0.9,
+      render:{fillStyle:'#09f'}
+    });
+    World.add(world,hex);
+
+    // floor that keeps moving down so the world is effectively endless
+    const floor=Bodies.rectangle(0,3e4,4000,120,{isStatic:true});
+    World.add(world,floor);
+
+    // build starting stack
+    const addRow=y=>{
+      for(let c=0;c<COLS;c++){
+        // small gap probability for playable holes
+        if(Math.random()<0.18) continue;
+        const block=Bodies.rectangle((c-COLS/2+0.5)*BLOCK_W, y, BLOCK_W, BLOCK_H,{
+          isStatic:true,
+          render:{fillStyle:neon()}
+        });
+        World.add(world,block);
+      }
+    };
+    for(let r=0;r<START_ROWS;r++) addRow(-r*BLOCK_H);
+
+    /* ----- camera & world recycling ------------------------------------- */
+    let camY=0, score=0, dead=false;
+
+    const recycle=()=>{
+      // extend tower downward ahead of player
+      while(floor.position.y - hex.position.y < cvs.height*2){
+        addRow(floor.position.y - 400);                   // new row above floor
+        Body.setPosition(floor,{x:0,y:floor.position.y+BLOCK_H*4});
+      }
+    };
+
+    /* ----- mouse interaction (remove blocks) ---------------------------- */
+    cvs.addEventListener('mousedown',e=>{
+      if(dead) return;
+      const rect=cvs.getBoundingClientRect();
+      const worldPoint={
+        x:e.clientX-rect.left - cvs.width/2,           // convert to world coords
+        y:e.clientY-rect.top  + camY
+      };
+      const hits=Query.point(Composite.allBodies(world),worldPoint);
+      hits.forEach(b=>{
+        if(b.isStatic && b!==floor){
+          Body.setStatic(b,false);                // let it fall, then purge later
+          setTimeout(()=>World.remove(world,b),3000);
+        }
+      });
+    });
+
+    /* ----- main loop ----------------------------------------------------- */
+    (function loop(){
+      requestAnimationFrame(loop);
+      if(dead) return draw();
+
+      Engine.update(engine,1000/60);
+      recycle();
+
+      // camera follows hexagon downward only (never upward)
+      camY=Math.min(camY,hex.position.y-cvs.height/3);
+
+      // scoring: 1 pt every 100 px descended
+      const newScore=Math.floor((hex.position.y+500)/100);
+      if(newScore>score){score=newScore;scoreEl.textContent='Score '+score;}
+
+      // lose conditions (falling out of column area)
+      if(hex.position.x < -COLS*BLOCK_W || hex.position.x > COLS*BLOCK_W){dead=true;}
+
+      draw();
+    })();
+
+    /* ----- rendering ----------------------------------------------------- */
+    function draw(){
+      ctx.clearRect(0,0,cvs.width,cvs.height);
+      ctx.save();
+      ctx.translate(cvs.width/2,-camY);               // camera transform
+
+      ctx.lineWidth=1;
+      Composite.allBodies(world).forEach(b=>{
+        const v=b.vertices;
+        ctx.beginPath();
+        ctx.moveTo(v[0].x,v[0].y);
+        for(let i=1;i<v.length;i++) ctx.lineTo(v[i].x,v[i].y);
+        ctx.closePath();
+        ctx.fillStyle=b.render.fillStyle||'#222';
+        ctx.fill();
+        ctx.strokeStyle='rgba(255,255,255,0.08)';
+        ctx.stroke();
+      });
+
+      if(dead){
+        ctx.fillStyle='rgba(0,0,0,0.6)';
+        ctx.fillRect(-cvs.width/2+camY,cvs.height/2-100,cvs.width,200);
+        ctx.fillStyle='#fff';
+        ctx.textAlign='center';
+        ctx.font='48px Arial';
+        ctx.fillText('Game Over',0,hex.position.y-60);
+        ctx.font='24px Arial';
+        ctx.fillText('Refresh to restart',0,hex.position.y-20);
+      }
+      ctx.restore();
+    }
+
+  })();
+  </script></body>
+</html>
